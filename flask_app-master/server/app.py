@@ -240,9 +240,9 @@ logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 # -------------------- CORS SETUP --------------------
-CORS(app, origins="http://localhost:5173", supports_credentials=True)
-CORS(app, resources={r"/api/*": {"origins": "http://localhost:5173"}}, supports_credentials=True)
-CORS(app, resources={r"/admin/*": {"origins": "http://localhost:5173"}}, supports_credentials=True)
+CORS(app, origins="https://i-stokvel-frontend.onrender.com", supports_credentials=True)
+CORS(app, resources={r"/api/*": {"origins": "https://i-stokvel-frontend.onrender.com"}}, supports_credentials=True)
+CORS(app, resources={r"/admin/*": {"origins": "https://i-stokvel-frontend.onrender.com"}}, supports_credentials=True)
 
 # -------------------- UTILITY FUNCTIONS --------------------
 def generate_otp():
