@@ -24,7 +24,8 @@ export const login = async (email: string, password: string) => {
       phone: user.phone || '',
       role: user.role || 'member',
       is_verified: user.is_verified || false,
-      profile_picture: user.profile_picture || null
+      profile_picture: user.profile_picture || null,
+      trial: user.trial || null,
     }));
     
     // Return the expected format for the Login component

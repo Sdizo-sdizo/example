@@ -26,6 +26,7 @@ export const useAuth = () => {
         const mappedUser = {
           ...user,
           profilePicture: user.profile_picture,
+          trial: user.trial || null,
         };
         setUser(mappedUser);
         localStorage.setItem('user', JSON.stringify(mappedUser));
