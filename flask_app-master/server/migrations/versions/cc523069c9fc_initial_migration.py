@@ -117,6 +117,10 @@ def upgrade():
     sa.Column('password_attempts', sa.Integer(), nullable=True),
     sa.Column('locked_until', sa.DateTime(), nullable=True),
     sa.Column('force_password_change', sa.Boolean(), nullable=True),
+    # --- Trial fields ---
+    sa.Column('trial_start', sa.DateTime(), nullable=True),
+    sa.Column('trial_end', sa.DateTime(), nullable=True),
+    sa.Column('is_trial', sa.Boolean(), nullable=True),
     sa.ForeignKeyConstraint(['role_id'], ['admin_role.id'], ),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('account_number'),

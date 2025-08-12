@@ -47,6 +47,7 @@ import re
 import secrets
 import pyotp
 from flask import Blueprint
+from sqlalchemy import text
 
 
 # Add this right after line 50 (after the imports and before the models)
@@ -239,6 +240,35 @@ jwt = JWTManager(app)
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
+# --- Runtime safeguard: ensure trial columns exist for SQLite deployments ---
+def ensure_user_trial_columns():
+    try:
+        # Only attempt for SQLite
+        if not app.config['SQLALCHEMY_DATABASE_URI'].startswith('sqlite'):  # skip for non-sqlite
+            return
+        result = db.session.execute(text("PRAGMA table_info('user')"))
+        cols = {row[1] for row in result.fetchall()}  # row[1] is column name
+        alter_statements = []
+        if 'trial_start' not in cols:
+            alter_statements.append("ALTER TABLE user ADD COLUMN trial_start DATETIME")
+        if 'trial_end' not in cols:
+            alter_statements.append("ALTER TABLE user ADD COLUMN trial_end DATETIME")
+        if 'is_trial' not in cols:
+            alter_statements.append("ALTER TABLE user ADD COLUMN is_trial BOOLEAN")
+        for stmt in alter_statements:
+            db.session.execute(text(stmt))
+        if alter_statements:
+            db.session.commit()
+    except Exception as e:
+        # Log and continue; don't block app startup
+        try:
+            current_app.logger.warning(f"Trial columns ensure failed: {e}")
+        except Exception:
+            print(f"Trial columns ensure failed: {e}")
+
+with app.app_context():
+    ensure_user_trial_columns()
+
 # -------------------- CORS SETUP --------------------
 CORS(app, origins="https://i-stokvel-frontend.onrender.com", supports_credentials=True)
 CORS(app, resources={r"/api/*": {"origins": "https://i-stokvel-frontend.onrender.com"}}, supports_credentials=True)
@@ -330,6 +360,11 @@ class User(db.Model):
     force_password_change = db.Column(db.Boolean, default=False)
     admin_role = db.relationship('AdminRole', backref='users')
 
+    # --- Trial fields ---
+    trial_start = db.Column(db.DateTime, nullable=True)
+    trial_end = db.Column(db.DateTime, nullable=True)
+    is_trial = db.Column(db.Boolean, default=False)
+
     def set_password(self, password):
         self.password = generate_password_hash(password)
 
@@ -344,6 +379,30 @@ class User(db.Model):
         db.session.commit()
         return self.verification_code
 
+    # --- Trial helpers ---
+    def start_trial(self, days: int = 14) -> None:
+        self.is_trial = True
+        self.trial_start = datetime.utcnow()
+        self.trial_end = self.trial_start + timedelta(days=days)
+
+    def is_trial_active(self) -> bool:
+        if not self.is_trial or not self.trial_end:
+            return False
+        return datetime.utcnow() < self.trial_end
+
+    def trial_status_dict(self) -> dict:
+        remaining_days = None
+        if self.trial_end:
+            delta = self.trial_end - datetime.utcnow()
+            remaining_days = max(0, delta.days)
+        return {
+            'is_trial': bool(self.is_trial),
+            'trial_start': self.trial_start.isoformat() if self.trial_start else None,
+            'trial_end': self.trial_end.isoformat() if self.trial_end else None,
+            'is_trial_active': self.is_trial_active(),
+            'days_left': remaining_days
+        }
+
     def to_dict(self):
         """Convert user object to dictionary for JSON serialization"""
         return {
@@ -357,7 +416,8 @@ class User(db.Model):
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'last_activity': self.updated_at.isoformat() if self.updated_at else None,
             'total_contributions': 0,  # You can calculate this if needed
-            'engagement_level': 'medium'  # You can calculate this based on activity
+            'engagement_level': 'medium',  # You can calculate this based on activity
+            'trial': self.trial_status_dict(),
         }
 
 class StokvelGroup(db.Model):
@@ -761,6 +821,8 @@ def register():
             account_number=generate_account_number()  # <-- ADD THIS
         )
         user.set_password(password)
+        # Start a 14-day free trial upon registration
+        user.start_trial(days=14)
 
         db.session.add(user)
         db.session.flush()  # Get the user ID
@@ -795,7 +857,8 @@ def register():
                     'email': user.email,
                     'user_id': user.id,
                     'account_number': user.account_number,  # <-- ADD THIS
-                    'email_sent': False
+                    'email_sent': False,
+                    'trial': user.trial_status_dict(),
                 }), 201
             else:
                 return jsonify({
@@ -803,7 +866,8 @@ def register():
                     'email': user.email,
                     'user_id': user.id,
                     'account_number': user.account_number,  # <-- ADD THIS
-                    'email_sent': True
+                    'email_sent': True,
+                    'trial': user.trial_status_dict(),
                 }), 201
                 
         except Exception as email_e:
@@ -816,7 +880,8 @@ def register():
                 'email': user.email,
                 'user_id': user.id,
                 'account_number': user.account_number,  # <-- ADD THIS
-                'email_sent': False
+                'email_sent': False,
+                'trial': user.trial_status_dict(),
             }), 201
 
     except Exception as e:
@@ -874,7 +939,8 @@ def login():
         "gender": user.gender,
         "employment_status": user.employment_status,
         "is_verified": user.is_verified,
-        "two_factor_enabled": user.two_factor_enabled
+        "two_factor_enabled": user.two_factor_enabled,
+        "trial": user.trial_status_dict(),
     }
     return jsonify({
         "success": True,
@@ -891,7 +957,8 @@ def get_current_user(current_user):
         'name': current_user.full_name,
         'email': current_user.email,
         'role': current_user.role,
-        'profilePicture': current_user.profile_picture
+        'profilePicture': current_user.profile_picture,
+        'trial': current_user.trial_status_dict(),
     })
 
 @app.route('/api/admin/groups', methods=['GET'])
@@ -5314,3 +5381,24 @@ def checkout(dbapi_connection, connection_record, connection_proxy):
     if connection_record.info['pid'] != pid:
         connection_record.info['pid'] = pid
         connection_record.info['checked_out'] = time.time()
+
+@app.route('/api/trial/status', methods=['GET'])
+@token_required
+def get_trial_status(current_user):
+    try:
+        return jsonify(current_user.trial_status_dict()), 200
+    except Exception as e:
+        return jsonify({'error': 'Failed to fetch trial status'}), 500
+
+@app.route('/api/trial/start', methods=['POST'])
+@token_required
+def start_trial_for_user(current_user):
+    try:
+        if current_user.is_trial and current_user.trial_end:
+            return jsonify({'error': 'Trial already started'}), 400
+        current_user.start_trial(days=14)
+        db.session.commit()
+        return jsonify(current_user.trial_status_dict()), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': 'Failed to start trial'}), 500
